@@ -1,7 +1,7 @@
 from diffusionjax.solvers import Solver, EulerMaruyama
 from diffusionjax.utils import get_linear_beta_function, continuous_to_discrete, get_times, get_timestep
 import numpyro.distributions as npdist
-from cmcd.utils import log_prob_kernel, get_simple_annealed
+from cmcd.utils import log_prob_kernel, get_simple_annealed, sample_rep
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 
@@ -22,7 +22,7 @@ class CMCDUD(Solver):
   # - v_t * I^{-1} x - alpha_t C^{-1} x
   # I have global information, by integrating over p_0
   # - (v_t * I + alpha_t * C)^{-1} x
-  def __init__(self, params, base_process_score, auxilliary_process_score=None, beta=None, ts=None, gamma=10., clip=1e2):
+  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, gamma=10., clip=1e2):
     """
     Args:
         score: grad_{x}(log p_{x, t})
@@ -38,22 +38,34 @@ class CMCDUD(Solver):
     self.score = score
     self.auxilliary_process_score = auxilliary_process_score
     self.gamma = gamma
-    self.base_process_score = base_process_score
     # TODO how to get shape at this point for solver
-    self.dist = npdist.Independent(npdist.Normal(loc=jnp.zeros(xd.shape), scale=1.), 1)
+    # TODO is the scale definately 1.?
+    self.dist_xd = npdist.Independent(npdist.Normal(loc=jnp.zeros(xd.shape), scale=1.), 1)
+    self.dist_x = build(self.params)
+    self.log_prob = log_prob
+
+    # TODO: check that something like this works
+    if self.base_process_score is None:
+      base_process_potential = get_annealed_langevin(self.log_prob)
+      base_process_score = jax.grad(base_process_potential)
+
+    self.base_process_score = base_process_score
 
   def fin_aux(aux, xd):
     w = aux
-    w = w + self.dist.log_prob(xd)
+    w = w + self.dist_xd.log_prob(xd)
     return w
 
   def init_aux(xd):
     w = 0.
-    w = w - self.dist.log_prob(xd)
+    w = w - self.dist_xd.log_prob(xd)
     return w
 
-  def prior(rng, shape):
-    return random.normal(rng, shape=(shape))
+  def prior(self, rng, shape):
+    # TODO: Not sure about this!
+    x_0 = sample_rep(rng, self.params)
+    xd_0 = random.normal(rng, shape=(shape))
+    return x_0, xd_0
 
   def evaluate_kernel_densities(xd, xd_prime, fk_xd_mean, bk_xd_mean, scale, scale_f):
     dist = npdist.Independent(npdist.Normal(loc=fk_xd_mean, scale=scale_f), 1)
@@ -244,7 +256,7 @@ class AISUD_unknown(CMCDUD):
   Annealed Importance Sampling using Underdamped Langevin Markov transition
   kernels Markov chain."""
 
-  def __init__(self, params, base_process_score, auxilliary_process_score=None, beta=None, ts=None, gamma=10., clip=1e2):
+  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, gamma=10., clip=1e2):
   # def __init__(self, negative_potential, num_leapfrog_steps=1, full_score_network=True):
     """
     Args:
@@ -262,13 +274,23 @@ class AISUD_unknown(CMCDUD):
     # params["eps"], params["md"]
     self.num_leapfrog_steps = num_leapfrog_steps
     self.inner_ts = jnp.arange(self.num_leapfrog_steps - 1)
+    self.params = params
+    self.log_prob = log_prob
 
-  def init_params(params, t):
-    eps = params["eps"]
-    eta = params["eta"]
-    md = params["md"]
+    # TODO: check that something like this works
+    if self.base_process_score is None:
+      base_process_potential = get_annealed_langevin(self.log_prob)
+      base_process_score = jax.grad(base_process_potential)
+
+    self.base_process_score = base_process_score
+
+  def init_params(t):
+    eps = self.params["eps"]
+    eta = self.params["eta"]
+    md = self.params["md"]
     # eta_aux = params["gamma"] * params["eps"]
-    scale = jnp.sqrt(2. * eta_aux)
+    # scale = jnp.sqrt(2. * eta_aux)
+    scale = jnp.sqrt(1.0 - eta**2) * jnp.exp(md)
     scale_f = scale
     return scale, scale_f, eta, eps, md
 
@@ -290,21 +312,29 @@ class AISUD_unknown(CMCDUD):
     x, xd = self.inner_update(x, xd, t)
     return (rng, x, xd, t), None
 
-  def update(self, rng, x, t, aux):
+  def update(self, rng, x, xd, t, aux):
 
-    # eps is dt, need to replace with it after all is done.
-    # xd is a velocity (or, momentum) parameter, since this is a second order (Underdamped) solver
+    def _init(x, xd, rng):
+      w = aux
+      rng, step_rng = jax.random.split(rng)
+      xd = random.normal()
+      # Evolve system
+      rng, step_rng = jax.random.split(rng)
+      aux = w
+      x, xd, aux, delta_H = jax.lax.scan(update, aux, ts)
+      w = aux
+      return x, w, delta_H
+
     w = aux
-    scale, scale_f, eta, eps, md = init_params(self.params)
+    scale, scale_f, eta, eps, md = init_params(t)
 
+    # Half step for momentum
+    negative_potential_x_final, grad_negative_potential_x = jax.value_and_grad(self.negative_potential)(x, t)
+    xd = xd - eps * grad_negative_potential_x * .5
+    negative_potential_xd_final = self.negative_potential_momentum(xd)
     # Re-sample momemtum
-    # TODO eta is discrete_beta. why squared? starts to look like DDPM
-    # TODO eta is fixed constant? yes, eta is the damping constant for 2nd order dynamics.
-    # Can one have an adaptive damping constant? seems like a good idea, but how to implement?
-    # params["eps"] - there is no adaptive time stepping in this scheme.
-    xd = beta * xd_prev + jnp.sqrt(1.0 - eta**2) * jnp.exp(md) * random.normal(rng, xd.shape)
+    xd = eta * xd_prev + scale_f * random.normal(rng, xd.shape)
     # Simulate dynamics
-    # z_new, xd_new, delta_H
     # Half step for momentum, U is the 2nd order potential
     negative_potential_x_init, grad_negative_potential_x = jax.value_and_grad(self.negative_potential)(x, t)
     xd = xd - eps * .5 * grad_negative_potential_x
@@ -312,18 +342,20 @@ class AISUD_unknown(CMCDUD):
     negative_potential_xd_init, grad_negative_potential_xd = jax.value_and_grad(self.negative_potential_momentum)(xd)
     x = x + eps * grad_negative_potential_xd
 
-    # Alternat full steps
-    # This is an inner solver but it can't be defined within update?
+    delta_H_init = negative_potential_x_init + negative_potential_xd_init
+    # NOTE: I have used different way of calculating delta_H, offset by one half step. Although this can easily be fixed.
+    delta_H = delta_H_init - negative_potential_x_final - negative_potential_xd_final
+
+    w = w + log_prob(xd_new, md) - log_prob(xd, md)
+    aux = w
+
+    # Inner solver goes here
+    # Alternate full steps
+    # This is an inner solver but it can't be defined within an inner solver update inside a sampler?
     if num_leap_frog_steps > 1:
       (rng, x, xd, t) = scan(self.inner_step, (step_rng, x, xd, t), self.inner_ts)[0]
 
-    # Half step for momentum
-    negative_potential_x_final, grad_negative_potential_x = jax.value_and_grad(self.negative_potential)(x, t)
-    xd = xd - eps * grad_negative_potential_x * .5
-    negative_potential_xd_final = self.negative_potential_momentum(xd)
-    delta_H = negative_potential_x_init - negative_potential_x_final + negative_potential_xd_init - negative_potential_xd_final
-
-    return x, xd, delta_H
+    return x, xd, aux, delta_H
 
 
 class CMCDOD(ControlledMonteCarloDiffusion):
@@ -336,7 +368,7 @@ class CMCDOD(ControlledMonteCarloDiffusion):
   # TODO: I think this is for training params, but that should be done on external training loop
   that initiates the solver via supplying params. I think that's possible, need to test
   """
-  def __init__(self, params, base_process_score, auxilliary_process_score=None, beta=None, ts=None, gamma=10., clip=1e2):
+  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, gamma=10., clip=1e2):
     """
     Args:
         score: grad_{x}(log p_{x, t})
@@ -352,122 +384,93 @@ class CMCDOD(ControlledMonteCarloDiffusion):
     self.score = score
     self.auxilliary_process_score = auxilliary_process_score
     self.gamma = gamma
+    self.dist_x = build(self.params)
+    self.log_prob = log_prob
+
+    # TODO: check that something like this works
+    if self.base_process_score is None:
+      base_process_potential = get_annealed_langevin(self.log_prob)
+      base_process_score = jax.grad(base_process_potential)
+
     self.base_process_score = base_process_score
-    # TODO how to get shape at this point for solver
-    self.dist = npdist.Independent(npdist.Normal(loc=jnp.zeros(xd.shape), scale=1.), 1)
 
   def init_aux(self, rng, shape):
     w = 0.
+    # TODO: I think should be this
+    # w = -self.dist_x.log_prob(x)
     return w
 
-  def prior(self, rng, shape):
-    # TODO: Just check this
-    return random.normal(rng, shape)
-
-  def fin_aux(self, aux):
+  def fin_aux(self, aux, x):
     """No final terms to add."""
-    return aux
-
-  def update_cais(self, rng, x, t, aux):
     w = aux
-    def init(params, t):
-      i = get_timestep(t)
-      # eta = None
-      # How to replace this with a time
-      # This is actuallly a beta schedule multiplied by dt
-      # their beta is actually be continuous times
-      # their eps is a discrete beta schedule
-      # eps is actually the largest discrete_beta,
-      # half the variance of the kernel. Although in DDPM it's the variance of the kernel
-      eps = self.discrete_betas[i]
-      # eps = _cosine_eps_schedule(params["eps"], i)
-      scale = jnp.sqrt(2. * eps)
-      scale_f = scale
-      return scale, scale_f, eps
+    # TODO: I think it should be this for the sampling problem
+    # dist = npdist.Independent(npdist.Normal(loc=jnp.zeros_like(x), scale=jnp.ones_like(x)), 1)
+    # w += dist.log_prob(x)
+    return w
 
-    def _init():
-      # sample initial momentum
-      rng, step_rng = random.split(rng)
-      w = 0.
-      (rng, x, aux), _ = jax.lax.scan(evolve, aux, np.arange(num_steps))
-      w = aux
+  def init_params(self, t):
+    i = get_timestep(t)
+    eps = self.discrete_betas[i]
+    scale = jnp.sqrt(2. * eps)
+    return scale, eps
 
-    # Test
-    w = aux
+  def prior(self, rng, shape):
+    # TODO: not sure about this!
+    x_0 = sample_rep(rng, self.params)
+    return x_0
 
-    rng, step_rng = random.split(rng)
-    scale, scale_f, eps = init(params, t)
+  def evaluate_kernel_densities(self, x, x_new, fk_mean, bk_mean, scale):
+    # Evaluate kernels
+    # TODO: for overdamped, log prob kernel is not necessarily normal!
+    dist = npdist.Independent(npdist.Normal(loc=fk_mean, scale=scale), 1)
+    fk_log_prob = dist.log_prob(x_new)
+    dist = npdist.Independent(npdist.Normal(loc=bk_mean, scale=scale), 1)
+    bk_log_prob = dist.log_prob(x)
+    return bk_log_prob, fk_log_prob
+
+  def forwards_kernel(self, eps, scale, x, t):
     fk_mean = x - eps * self.base_process_score(x, t) - eps * self.auxilliary_process_score(self.params["sn"], x, t)
-
     x_new = x_mean + scale * random.normal(rng, x.shape)
-    # NOTE: no stop gradient here.
+    return x_new, fk_mean
 
+  def backwards_kernel(self, eta, x, t):
     # Backwards kernel
     if self.auxilliary_process_score is None:
       bk_mean = x_new - eps * self.base_process_score(x_new, t)
     else:
       bk_mean = (x_new
-                 - eps * self.base_process_score(x_new, t)
-                 + eps * self.auxilliary_process_score(self.params["sn"], x_new, t_next))
+                - eps * self.base_process_score(x_new, t)
+                + eps * self.auxilliary_process_score(self.params["sn"], x_new, t_next))
+    return bk_mean
 
-    # Evaluate kernels
-    dist = npdist.Independent(npdist.Normal(loc=fk_mean, scale=scale), 1)
-    fk_log_prob = dist.log_prob(x_new)
-    dist = npdist.Independent(npdist.Normal(loc=bk_mean, scale=scale), 1)
-    fk_log_prob = dist.log_prob(x)
+  def update(self, rng, x, t, aux):
+    """NOTE: Uses a cosine_sq or linear beta schedule."""
+    w = aux
+    rng, step_rng = random.split(rng)
+    scale, eps = self.init(self.params, t)
+    x_new, fk_mean = self.forwards_kernel(eps, scale, x, t)
+    bk_mean = self.backwards_kernel(eta, x, t)
+
+    # NOTE: no stop gradient here.
+    bk_log_prob, fk_log_prob = self.evaluate_kernel_densities(x, x_new, fk_mean, bk_mean, scale)
 
     # Update weight and return
     w += bk_log_prob - fk_log_prob
     aux = w
-    return x_new, x_mean, aux
+    return x_new, fk_mean, aux
 
-  def update_var_cais(self, rng, x, t, aux):
-    """NOTE: Uses a cosine_sq or linear beta schedule."""
-    w = aux
 
-    def init(params, t):
-      i = get_timestep(t)
-      # eta = None
-      # How to replace this with a time
-      # This is actuallly a beta schedule multiplied by dt
-      # their beta is actually be continuous times
-      # their eps is a discrete beta schedule
-      # eps is actually the largest discrete_beta,
-      # half the variance of the kernel. Although in DDPM it's the variance of the kernel
-      eps = self.discrete_betas[i]
-      # eps = _cosine_eps_schedule(params["eps"], i)
-      eta_aux = None
-      scale = jnp.sqrt(2. * eps)
-      scale_f = scale
-      return scale, scale_f, eps, eta_aux
+class VarCMCDOD(CMCDOD):
 
-    def _init():
-      # sample initial momentum
-      rng, step_rng = random.split(rng)
-      xd = random.normal(rng, shape=(xd.shape))
-
-      dist = npdist.Independent(npdist.Normal(loc=jnp.zeros(xd.shape), scale=1.), 1)
-      w = 0. - dist.log_prob(xd)
-
-      # Evolve system
-      aux = w
-      rng, step_rng = jax.random.split(rng)
-      (rng, x, xd, aux), _ = jax.lax.scan(evolve, aux, np.arange(num_steps))
-
-      # Add final momentum term to w
-      dist = npdist.Independent(npdist.Normal(loc=jnp.zeros(xd.shape), scale=1.), 1)
-      w = w + dist.log_prob(xd)
-
-    x = stop_gradient(x)
-    rng, step_rng = random.split(rng)
-    scale, scale_f, eps = init(self.params, t)
-
+  def forwards_kernel(self, eps, scale, x, t):
     # NOTE: This is not DDPM, in DDPM there is a scaling by sqrt(1. - beta)
+    x = stop_gradient(x)
     fk_mean = x - eps * self.base_process_score(x, t) - eps * self.auxilliary_process_score(self.params["sn"], x, t)
-
     x_new = x_mean + scale * random.normal(rng, x.shape)
     x_new = stop_gradient(x_new)
+    return x_new, fk_mean
 
+  def backwards_kernel(self, eta, x, t):
     # Backwards kernel
     if self.auxilliary_process_score is None:
       bk_mean = x_new - eps * self.base_process_score(x_new, t)
@@ -475,18 +478,8 @@ class CMCDOD(ControlledMonteCarloDiffusion):
       # TODO: is it t_next or t_prev?
       bk_mean = (x_new
                  - eps * self.base_process_score(x_new, t)
-                 + eps * self.auxilliary_process_score(self.params, x_new, t_next))
-
-    # Evaluate kernels
-    dist = npdist.Independent(npdist.Normal(loc=fk_mean, scale=scale), 1)
-    fk_log_prob = dist.log_prob(x_new)
-    dist = npdist.Independent(npdist.Normal(loc=bk_mean, scale=scale), 1)
-    fk_log_prob = dist.log_prob(x)
-
-    # Update weight and return
-    w += bk_log_prob - fk_log_prob
-    aux = w
-    return x_new, x_mean, aux
+                 + eps * self.auxilliary_process_score(self.params["sn"], x_new, t_next))
+    return bk_mean
 
 
 class MonteCarloDiffusion(Solver):
@@ -494,7 +487,7 @@ class MonteCarloDiffusion(Solver):
   Monte Carlo Diffusion. Overdamped solver.
   from mc_ula_sn which is evolve_overdamped_orig
   """
-  def __init__(self, base_process_score, auxilliary_process_score=None, beta=None, ts=None, gamma=10.0):
+  def __init__(self, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, gamma=10.0):
     """
     Args:
         score: grad_{x}(log p_{x, t})
@@ -506,17 +499,51 @@ class MonteCarloDiffusion(Solver):
       beta, _ = get_linear_beta_function(
         beta_min=0.1, beta_max=20.)
     self.discrete_betas = continuous_to_discrete(vmap(beta)(self.ts.flatten()), self.dt)
-    self.base_process_score = base_process_score
     self.auxilliary_process_score = auxilliary_process_score
     self.gamma = gamma
+
+    # TODO: check that something like this works
+    if self.base_process_score is None:
+      base_process_potential = get_annealed_langevin(self.log_prob)
+      base_process_score = jax.grad(base_process_potential)
+
+    self.base_process_score = base_process_score
 
   def init_aux(self, rng, shape):
     w = 0.
     return w
 
   def prior(self, rng, shape):
-    # TODO: Just check this
-    return random.normal(rng, shape)
+    x_0 = sample_rep(rng, self.params)
+    return x_0
+
+  def init_params(self, t):
+    i = get_timestep(t)
+    eps = self.discrete_betas[i]
+    scale = jnp.sqrt(2. * eps)
+    return scale, eps
+
+  def forwards_kernel(self, eps, scale, x, t):
+    fk_mean = x - eps * self.base_process_score(x, t)
+    x_new = x_mean + scale * random.normal(rng, x.shape)
+    return x_new, fk_mean
+
+  def backwards_kernel(self, eta, x, t):
+    # Backwards kernel
+    if self.auxilliary_process_score is None:
+      bk_mean = x_new - beta * self.base_process_score(x_new, t)
+    else:
+      bk_mean = (x_new
+                - beta * self.base_process_score(x_new, t))
+    return bk_mean
+
+  def evaluate_kernel_densities(self, x, x_new, fk_mean, bk_mean, scale):
+    # Evaluate kernels
+    dist = npdist.Independent(npdist.Normal(loc=fk_mean, scale=scale), 1)
+    fk_log_prob = dist.log_prob(x_new)
+    dist = npdist.Independent(npdist.Normal(loc=bk_mean, scale=scale), 1)
+    bk_log_prob = dist.log_prob(x)
+    return bk_log_prob, fk_log_prob
 
   def final_update(self, aux, shape):
     """No final terms to add."""
@@ -525,30 +552,15 @@ class MonteCarloDiffusion(Solver):
   def update(self, rng, x, t, aux):
     # TODO: needs checking
     w = aux
-    timestep = get_timestep(t)
-    beta = self.discrete_betas[timestep]  # NOTE: that they have discrete betas for this diffusion sampler and not the annealed Langevin sampler
 
     # Forward kernel
-    fk_mean = x - beta * self.base_process_score(x, t)
-    scale = jnp.sqrt(2. * beta)
     rng, step_rng = random.split(rng)
-    z = random.normal(rng, x.shape)
-    x_mean = fk_mean
-    x_new = x_mean + scale * z
-
-    # Backwards kernel
-    if self.auxilliary_process_score is None:
-      bk_mean = x_new - beta * self.base_process_score(x_new, t)
-    else:
-      bk_mean = (x_new
-                 - beta * self.base_process_score(x_new, t)
-                 + beta * self.auxilliary_process_score(self.params, x_new, t))
+    eps, scale = self.init_params(t)
+    x_new, fk_mean = self.forwards_kernel(eps, scale, x, t)
+    bk_mean = self.backwards_kernel(eta, x, t)
 
     # Evaluate kernels
-    dist = npdist.Independent(npdist.Normal(loc=fk_mean, scale=scale), 1)
-    fk_log_prob = dist.log_prob(x_new)
-    dist = npdist.Independent(npdist.Normal(loc=bk_mean, scale=scale), 1)
-    fk_log_prob = dist.log_prob(x)
+    bk_log_prob, fk_log_prob = self.evaluate_kernel_densities(x, x_new, fk_mean, bk_mean, scale)
 
     # Update weight and return
     w += bk_log_prob - fk_log_prob
