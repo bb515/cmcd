@@ -51,6 +51,11 @@ def get_config():
     solver.outer_solver = 'EulerMaruyama'
     solver.inner_solver = None
     solver.leapfrog_steps = 1
+    solver.eps = 0.
+    solver.eta = .5
+    # TODO: confirm these parameters are for the network
+    model.emd_dim = 48
+    model.num_layers = 3
 
     # optim
     optim = config.optim

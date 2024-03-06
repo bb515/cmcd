@@ -9,6 +9,7 @@ from jax.example_libraries.stax import (
     parallel,
     serial,
 )
+# TODO: convert to Flax
 
 
 def initialize_embedding(rng, nbridges, emb_dim, factor=0.05):
