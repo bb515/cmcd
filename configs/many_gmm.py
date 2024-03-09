@@ -1,5 +1,6 @@
 """Config for `examples/example.py`."""
-from configs.default_cs_configs import get_default_configs
+from configs.default_config import get_default_configs
+import os
 
 
 def get_config():
@@ -35,6 +36,10 @@ def get_config():
     data = config.data
     data.image_size = 2
     data.num_channels = None
+    data.num_mixes = 4  # 40
+    data.loc_scaling = 10  # 40
+    cwd = os.getcwd()
+    data.file_path = os.path.join(cwd, "../pines.csv")
 
     # model
     model = config.model
@@ -48,14 +53,16 @@ def get_config():
     # solver
     solver = config.solver
     solver.num_outer_steps = 1000
-    solver.outer_solver = 'EulerMaruyama'
+    solver.outer_solver = 'MonteCarloDiffusion'
     solver.inner_solver = None
     solver.leapfrog_steps = 1
-    solver.eps = 0.
-    solver.eta = .5
+    solver.eps = 0.01
+    solver.eta = 0.5
+    solver.gamma = 10.0
+
     # TODO: confirm these parameters are for the network
     model.emd_dim = 48
-    model.num_layers = 3
+    # model.num_layers = 3
 
     # optim
     optim = config.optim

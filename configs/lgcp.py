@@ -1,14 +1,23 @@
-"""Config for `examples/example.py`."""
+"""Config for `gmm.py`."""
 from configs.default_config import get_default_configs
+import os
 
 
 def get_config():
     config = get_default_configs()
+
+    # mfvi
+    mfvi = config.mfvi
+    mfvi.pretrain = True
+    # mfvi.n_iters = 150000
+    mfvi.n_iters = 150
+    mfvi.lr = 0.01
+
     # training
     training = config.training
     training.sde = 'vpsde'
     # training.sde = 'vesde'
-    training.n_iters = 4000
+    training.n_iters = 150
     training.batch_size = 8
     training.likelihood_weighting = False
     training.score_scaling = True
@@ -28,39 +37,45 @@ def get_config():
 
     # sampling
     sampling = config.sampling
-    sampling.denoise = True
-    sampling.noise_std = 0.05
+    sampling.cs_method = None
+    sampling.noise_std = 1.0
+    sampling.denoise = True  # work out what denoise_override is
+    sampling.innovation = True  # this will probably be superceded
+    sampling.inverse_scaler = None
+    sampling.stack_samples = False
 
     # data
     data = config.data
     data.image_size = 2
     data.num_channels = None
-    # NICE Config/
-    data.im_size = 14
-    data.alpha = 0.05
-    data.n_bits = 3
-    data.hidden_dim = 1000
+    config.use_whitened = False
+    config.data.use_whitened = config.use_whitened
+    cwd = os.getcwd()
+    config.file_path = os.path.join(cwd, "./assets/pines.csv")
 
     # model
     model = config.model
+    model.emb_dim = 20
     # for vp
-    model.beta_min = 0.01
-    model.beta_max = 3.
+    model.beta_min = 0.1
+    model.beta_max = 25.0  # 200 also works, depends on time step size
     # for ve
     model.sigma_min = 0.01
     model.sigma_max = 10.
-    model.emd_dim = 48
-    # model.num_layers = 3
 
     # solver
     solver = config.solver
-    solver.num_outer_steps = 1000
-    solver.outer_solver = 'MonteCarloDiffusion'
+    solver.num_outer_steps = 8
+    solver.eta = 1.0
     solver.inner_solver = None
-    solver.leapfrog_steps = 1
+    solver.stsl_scale_hyperparameter = 0.02
+    solver.dps_scale_hyperparameter = 0.05
+    solver.init_sigma = 1.0
+    solver.outer_solver = 'MonteCarloDiffusion'
+    solver.num_leapfrog_steps = 1
     solver.eps = 0.01
-    solver.eta = 0.5
-    solver.gamma = 10.
+    solver.eta = 0.5  # TODO: fix name conflict, this is a discrete_beta
+    solver.gamma = 10.0
 
     # optim
     optim = config.optim

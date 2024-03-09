@@ -4,11 +4,19 @@ from configs.default_config import get_default_configs
 
 def get_config():
     config = get_default_configs()
+
+    # mfvi
+    mfvi = config.mfvi
+    mfvi.pretrain = True
+    # mfvi.n_iters = 150000
+    mfvi.n_iters = 150
+    mfvi.lr = 0.01
+
     # training
     training = config.training
     training.sde = 'vpsde'
     # training.sde = 'vesde'
-    training.n_iters = 4000
+    training.n_iters = 150
     training.batch_size = 8
     training.likelihood_weighting = False
     training.score_scaling = True
@@ -42,15 +50,13 @@ def get_config():
 
     # model
     model = config.model
+    model.emb_dim = 20
     # for vp
     model.beta_min = 0.1
     model.beta_max = 25.0  # 200 also works, depends on time step size
     # for ve
     model.sigma_min = 0.01
     model.sigma_max = 10.
-
-    model.emb_dim = 20
-    model.num_layers = 3
 
     # solver
     solver = config.solver
@@ -60,15 +66,11 @@ def get_config():
     solver.stsl_scale_hyperparameter = 0.02
     solver.dps_scale_hyperparameter = 0.05
     solver.init_sigma = 1.0
-    # solver.outer_solver = 'UHA'
-    solver.outer_solver = 'CMCDUD'
+    solver.outer_solver = 'MonteCarloDiffusion'
     solver.num_leapfrog_steps = 1
-
-    # mfvi
-    mfvi = config.mfvi
-    mfvi.pretrain = True
-    mfvi.iters = 150000
-    mfvi.lr = 0.01
+    solver.eps = 0.01
+    solver.eta = 0.5  # TODO: fix name conflict, this is a discrete_beta
+    solver.gamma = 10.0
 
     # optim
     optim = config.optim

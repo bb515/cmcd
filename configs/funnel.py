@@ -1,5 +1,5 @@
 """Config for `examples/example.py`."""
-from configs.default_cs_configs import get_default_configs
+from configs.default_config import get_default_configs
 
 
 def get_config():
@@ -35,6 +35,9 @@ def get_config():
     data = config.data
     data.image_size = 2
     data.num_channels = None
+    data.funnel_d = 10
+    data.funnel_sig = 3
+    data.funnel_clipy = 11
 
     # model
     model = config.model
@@ -44,18 +47,18 @@ def get_config():
     # for ve
     model.sigma_min = 0.01
     model.sigma_max = 10.
+    model.emd_dim = 48
+    # model.num_layers = 3
 
     # solver
     solver = config.solver
-    solver.num_outer_steps = 1000
-    solver.outer_solver = 'EulerMaruyama'
+    solver.num_outer_steps = 8
+    solver.outer_solver = 'MonteCarloDiffusion'
     solver.inner_solver = None
     solver.leapfrog_steps = 1
     solver.eps = 0.
     solver.eta = .5
-    # TODO: confirm these parameters are for the network
-    model.emd_dim = 48
-    model.num_layers = 3
+    solver.gamma = 10.0
 
     # optim
     optim = config.optim

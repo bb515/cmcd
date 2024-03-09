@@ -1,23 +1,46 @@
 """Calculate the normalising constant using CMCD."""
+import os
+import pickle
+from diffusionjax.utils import flatten_nested_dict
+import distrax
+from cmcd.run_lib import (
+  training,
+  sample_from_target,
+  setup_training,
+  )
+from ml_collections.config_flags import config_flags
+from absl import app, flags
+import jax
+import jax.numpy as jnp
+import jax.random as random
+import wandb
 
 
-def load_model(model="many_gmm", config=None):
-  gmm = GMM(dim=2, n_mixes=config.n_mixes, loc_scaling=config.loc_scaling)
+FLAGS = flags.FLAGS
+config_flags.DEFINE_config_file(
+  "config", './configs/many_gmm.py', "Training configuration.",
+  lock_config=True)
+flags.DEFINE_string("workdir", './examples/', "Work directory.")
+flags.mark_flags_as_required(["workdir", "config"])
+
+
+def load_model(config):
+  gmm = GMM(dim=2, num_mixes=config.data.num_mixes, loc_scaling=config.data.loc_scaling)
   return gmm.log_prob, 2, gmm.sample
 
 
 class GMM:
-  def __init__(self, dim, n_mixes, loc_scaling, log_var_scaling=0.1, seed=0):
+  def __init__(self, dim, num_mixes, loc_scaling, log_var_scaling=0.1, seed=0):
     self.seed = seed
-    self.n_mixes = n_mixes
+    self.num_mixes = num_mixes
     self.dim = dim
-    key = jax.random.PRNGKey(seed)
-    logits = np.ones(n_mixes)
+    key = random.PRNGKey(seed)
+    logits = jnp.ones(num_mixes)
     mean = (
-        jax.random.uniform(shape=(n_mixes, dim), key=key, minval=-1.0, maxval=1.0)
+        random.uniform(shape=(num_mixes, dim), key=key, minval=-1.0, maxval=1.0)
         * loc_scaling
     )
-    log_var = np.ones(shape=(n_mixes, dim)) * log_var_scaling
+    log_var = jnp.ones(shape=(num_mixes, dim)) * log_var_scaling
 
     mixture_dist = distrax.Categorical(logits=logits)
     var = jax.nn.softplus(log_var)
@@ -35,7 +58,7 @@ class GMM:
     # Can have numerical instabilities once log prob is very small. Manually override to prevent this.
     # This will cause the flow will ignore regions with less than 1e-4 probability under the target.
     valid_log_prob = log_prob > -1e4
-    log_prob = np.where(valid_log_prob, log_prob, -np.inf * np.ones_like(log_prob))
+    log_prob = jnp.where(valid_log_prob, log_prob, -jnp.inf * jnp.ones_like(log_prob))
     return log_prob
 
   def sample(self, seed, sample_shape):
@@ -53,13 +76,8 @@ def main(argv):
   # jax_config.update("jax_traceback_filtering", "off")
   # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 
-  ml_collections.config_flags.DEFINE_config_file(
-      "config",
-      "configs/base.py",
-      "Training configuration.",
-      lock_config=False,
-  )
-  FLAGS = flags.FLAGS
+  log_prob_model, dim, sample_from_target_fn = load_model(config)
+  sample_shape = (dim, )
 
   wandb_kwargs = {
     "project": config.wandb.project,
@@ -72,13 +90,26 @@ def main(argv):
 
   with wandb.init(**wandb_kwargs) as run:
     setup_training(run)
+    params = training(config, log_prob_model, sample_from_target_fn, sample_shape)
 
-  # Organize into a model setup thing in run_lib
-  # If tractable distribution, we also return sample_from_target_fn
-  log_prob_model, dim, sample_from_target_fn = load_model(
-      config.model, config
-  )
+    if config.wandb.log_artifact:
+      artifact_name = f"many_gmm_{config.solver.bound_mode}_{config.solver.num_outer_steps}"
+      artifact = wandb.Artifact(
+        artifact_name,
+        type="final params",
+      )
+      # Save model
+      with artifact.new_file("params.pkl", "wb") as f:
+        pickle.dump(params, f)
+
+      wandb.log_artifact(artifact)
 
 
 if __name__ == "__main__":
+    # os.environ["WANDB_API_KEY"] = "9835d6db89010f73306f92bb9a080c9751b25d28"
+
+    # Adds jax flags to the program.
+    jax.config.config_with_absl()
+
     app.run(main)
+

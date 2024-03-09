@@ -1,5 +1,27 @@
 """Calculate the normalising constant using CMCD."""
+import jax
+from absl import app, flags
+from ml_collections.config_flags import config_flags
+import wandb
+import pickle
+import numpy as np
 from annealed_flow_transport.densities import LogDensity
+import cmcd.cp_utils as cp_utils
+import jax.numpy as jnp
+from typing import Optional
+from cmcd.run_lib import (
+  setup_training,
+  training,
+  sample_from_target,
+  )
+from diffusionjax.utils import flatten_nested_dict
+
+FLAGS = flags.FLAGS
+config_flags.DEFINE_config_file(
+  "config", './configs/lgcp.py', "Training configuration.",
+  lock_config=True)
+flags.DEFINE_string("workdir", './examples/', "Work directory.")
+flags.mark_flags_as_required(["workdir", "config"])
 
 
 class LogGaussianCoxPines(LogDensity):
@@ -19,21 +41,21 @@ class LogGaussianCoxPines(LogDensity):
     So for a 40 x 40 grid num_dim should be 1600.
     """
 
-    def __init__(self, config: ConfigDict, num_dim: int = 1600):
+    def __init__(self, config, num_dim: int = 1600):
         super().__init__(config, num_dim)
 
         # Discretization is as in Controlled Sequential Monte Carlo
         # by Heng et al 2017 https://arxiv.org/abs/1708.08396
         self._num_latents = num_dim
-        self._num_grid_per_dim = int(np.sqrt(num_dim))
+        self._num_grid_per_dim = int(jnp.sqrt(num_dim))
 
-        bin_counts = np.array(
+        bin_counts = jnp.array(
             cp_utils.get_bin_counts(
                 self.get_pines_points(config.file_path), self._num_grid_per_dim
             )
         )
 
-        self._flat_bin_counts = np.reshape(bin_counts, (self._num_latents))
+        self._flat_bin_counts = jnp.reshape(bin_counts, (self._num_latents))
 
         # This normalizes by the number of elements in the grid
         self._poisson_a = 1.0 / self._num_latents
@@ -51,27 +73,27 @@ class LogGaussianCoxPines(LogDensity):
             )
 
         self._gram_matrix = cp_utils.gram(short_kernel_func, self._bin_vals)
-        self._cholesky_gram = np.linalg.cholesky(self._gram_matrix)
+        self._cholesky_gram = jnp.linalg.cholesky(self._gram_matrix)
         self._white_gaussian_log_normalizer = (
-            -0.5 * self._num_latents * np.log(2.0 * np.pi)
+            -0.5 * self._num_latents * jnp.log(2.0 * jnp.pi)
         )
 
-        half_log_det_gram = np.sum(np.log(np.abs(np.diag(self._cholesky_gram))))
+        half_log_det_gram = jnp.sum(jnp.log(jnp.abs(jnp.diag(self._cholesky_gram))))
         self._unwhitened_gaussian_log_normalizer = (
-            -0.5 * self._num_latents * np.log(2.0 * np.pi) - half_log_det_gram
+            -0.5 * self._num_latents * jnp.log(2.0 * jnp.pi) - half_log_det_gram
         )
         # The mean function is a constant with value mu_zero.
-        self._mu_zero = np.log(126.0) - 0.5 * self._signal_variance
+        self._mu_zero = jnp.log(126.0) - 0.5 * self._signal_variance
 
         if self._config.use_whitened:
             self._posterior_log_density = self.whitened_posterior_log_density
         else:
             self._posterior_log_density = self.unwhitened_posterior_log_density
 
-    def _check_constructor_inputs(self, config: ConfigDict, num_dim: int):
+    def _check_constructor_inputs(self, config, num_dim: int):
         expected_members_types = [("use_whitened", bool)]
         self._check_members_types(config, expected_members_types)
-        num_grid_per_dim = int(np.sqrt(num_dim))
+        num_grid_per_dim = int(jnp.sqrt(num_dim))
         if num_grid_per_dim * num_grid_per_dim != num_dim:
             msg = (
                 "num_dim needs to be a square number for LogGaussianCoxPines "
@@ -87,11 +109,11 @@ class LogGaussianCoxPines(LogDensity):
         """Get the pines data points."""
         with open(file_path, mode="rt") as input_file:
             # with open(file_path, "rt") as input_file:
-            b = onp.genfromtxt(input_file, delimiter=",")
+            b = np.genfromtxt(input_file, delimiter=",")
         return b
 
-    def whitened_posterior_log_density(self, white: Array) -> Array:
-        quadratic_term = -0.5 * np.sum(white**2)
+    def whitened_posterior_log_density(self, white):
+        quadratic_term = -0.5 * jnp.sum(white**2)
         prior_log_density = self._white_gaussian_log_normalizer + quadratic_term
         latent_function = cp_utils.get_latents_from_white(
             white, self._mu_zero, self._cholesky_gram
@@ -101,19 +123,19 @@ class LogGaussianCoxPines(LogDensity):
         )
         return prior_log_density + log_likelihood
 
-    def unwhitened_posterior_log_density(self, latents: Array) -> Array:
+    def unwhitened_posterior_log_density(self, latents):
         white = cp_utils.get_white_from_latents(
             latents, self._mu_zero, self._cholesky_gram
         )
         prior_log_density = (
-            -0.5 * np.sum(white * white) + self._unwhitened_gaussian_log_normalizer
+            -0.5 * jnp.sum(white * white) + self._unwhitened_gaussian_log_normalizer
         )
         log_likelihood = cp_utils.poisson_process_log_likelihood(
             latents, self._poisson_a, self._flat_bin_counts
         )
         return prior_log_density + log_likelihood
 
-    def evaluate_log_density(self, x: Array) -> Array:
+    def evaluate_log_density(self, x):
         # import pdb; pdb.set_trace()
         if len(x.shape) == 1:
             return self._posterior_log_density(x)
@@ -121,7 +143,7 @@ class LogGaussianCoxPines(LogDensity):
             return jax.vmap(self._posterior_log_density)(x)
 
 
-def load_model(model="lgcp", config=None):
+def load_model(config):
     lgcp = LogGaussianCoxPines(config, num_dim=1600)
     return lgcp.evaluate_log_density, lgcp._num_latents
 
@@ -137,13 +159,9 @@ def main(argv):
   # jax_config.update("jax_traceback_filtering", "off")
   # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 
-  ml_collections.config_flags.DEFINE_config_file(
-      "config",
-      "configs/base.py",
-      "Training configuration.",
-      lock_config=False,
-  )
-  FLAGS = flags.FLAGS
+  log_prob_model, dim = load_model(config)
+  sample_from_target_fn = None
+  sample_shape = (dim,)
 
   wandb_kwargs = {
     "project": config.wandb.project,
@@ -157,15 +175,26 @@ def main(argv):
   with wandb.init(**wandb_kwargs) as run:
     setup_training(run)
     # Load in the correct LR from sweeps
-    new_vals = setup_config(run.config, config)
-    update_config_dict(config, run, new_vals)
-    print(config)
+    params, samples, target_samples, n_samples = training(
+      config, log_prob_model, sample_from_target_fn, sample_shape)
 
-  # Organize into a model setup thing in run_lib
-  # If tractable distribution, we also return sample_from_target_fn
-  log_prob_model, dim = load_model(config.model, config)
-  sample_from_target_fn = None
+    if config.wandb.log_artifact:
+      artifact_name = f"lgcp_{config.solver.bound_mode}_{config.solver.num_outer_steps}"
+      artifact = wandb.Artifact(
+        artifact_name,
+        type="final params",
+      )
+      # Save model
+      with artifact.new_file("params.pkl", "wb") as f:
+        pickle.dump(params, f)
+
+      wandb.log_artifact(artifact)
 
 
 if __name__ == "__main__":
+    # os.environ["WANDB_API_KEY"] = "9835d6db89010f73306f92bb9a080c9751b25d28"
+
+    # Adds jax flags to the program.
+    jax.config.config_with_absl()
+
     app.run(main)

@@ -1,113 +1,89 @@
-Controlled Monte Carlo Diffusions
-=================================
+# Transport meets Variational Inference: Controlled Monte Carlo Diffusions
 
-<!-- ![result-git0](./readme_FFHQ_0.05.gif) -->
+(A non official) implementation for the ICLR 2024 paper [[OpenReview]](https://openreview.net/forum?id=PP1rudnxiW) [[arXiv]](https://arxiv.org/abs/2307.01050).
 
-This repo contains an implementation for the paper
-[Controlled Monte Carlo Diffusions](https://arxiv.org/pdf/2307.01050.pdf) and it has lots of benchmarks for testing state of the art (SOTA) sampling methods.
+We provide code to run the experiments in the paper, on a wide variety of target distributions that have been implemented in `cmcd/examples/`. The code is written in Jax, and we use `wandb` for logging and visualisation.
 
-<!-- ![cover-img1](./readme_FFHQ_0.05.png) -->
+To run different methods and targets, following the template below - 
 
-![nPlan](readme_nplan.png)
+```python main.py --config.model log_ionosphere --config.solver.outer_solver CMCDOD```
 
-Thank you to [nPlan](https://www.nplan.io/), who are supporting this project.
+For the `config.solver.outer_solver`
+- CMCD, ULA and MCD use `CMCDOD`
+- UHA uses `UHA`
+- LDVI uses `LeapfrogA`
+- 2nd order CMCD uses `LeapfrogACAIS`
+- CMCD + VarGrad loss uses `VarCMCDOD`
 
 Contents:
 - [Installation](#installation)
 - [Experiments](#experiments)
-    - [Gaussian](#gaussian)
-    - [Gaussian Mixture Model](#gmm)
-    - [Noisy inpainting, super resolution and deblur](#noisy-inpainting,-super-resolution-and-deblur)
-- [Does haves](#does-haves)
-- [Doesn't haves](#doesn't-haves)
+    - [Gaussian Mixture Model, 40 modes](#40-gmm)
+    - [Funnel](#funnel)
+    - [LGCP](#lgcp)
+    - [Gaussian Mixture Model, 2 modes](#2-gmm)
 
 ## Installation
-The package requires Python 3.7. First, it is recommended to [create a new python virtual environment](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#creating-an-environment-with-commands). This package depends on an old version of tensorflow to be compatible with the pretrained diffusion models. First, [install `tensorflow=2.7.0`](https://www.tensorflow.org/install/pip).
+The package requires Python 3.9. First, it is recommended to [create a new python virtual environment](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#creating-an-environment-with-commands).
 
-```
-pip install --upgrade pip
-conda install -c conda-forge cudatoolkit=11.8.0
-python3 -m pip install nvidia-cudnn-cu11==8.6.0.163 tensorflow==2.7.0
-```
+Then, install `jax`. Note the JAX installation is different depending on your CUDA version.
 
-Then, install `jax==0.2.18`. This package depends on an old version JAX to be compatible with the pretrained diffusion models. Note the JAX installation is different depending on your CUDA version, so you may have to install JAX differently than below.
-```sh
-'pip install jax==0.2.18 jaxlib==0.1.69+cuda111 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html',
-```
-
-Make sure the tensorflow and jax versions are as above and are working on your accelerator. Then,
-- Install `diffusionjax` (you may need to remove the dependency of orbax and optax, which conflicts with Python 3.7).
-- Clone the repository `git clone git@github.com:bb515/tmpd.git`.
+Make sure the jax versions are working on your accelerator. Then,
+- Install `diffusionjax`.
+- Clone the repository `git clone git@github.com:bb515/cmcd.git`.
 - Install using pip `pip install -e .` from the working directory of this README file (see the `setup.py` for the requirements that this command installs).
 
 ## Experiments
 
-### Gaussian
-Reproduce our experiment by typing 
-```sh
-python grf.py:
-  --config: Training configuration.
-    (default: './configs/grf.py')
-  --workdir: Working directory
-    (default: './workdir')
+TODO: Complete this section to validate implementation. Below, we provide the commands replicating the hparam settings used in the paper, and the wandb links to the experiments.
+
+#### 40-GMM
+
+By default, in order to make comparisons to DDS/PIS, we use the same network architecture with time embeddings from the DDS repo. In order to run our method using the DDS architecture, you can set `--config.nn_arch dds` in the command line.
+
+```bash
+python examples/many_gmm.py --config.solver.outer_solver CMCDOD --config.N 2000 --config.nbridges 256 --noconfig.pretrain_mfvi --config.init_sigma 60 --config.grad_clipping --config.init_eps 1 --config.eps_schedule cos_sq --config.lr 0.001 --noconfig.train_eps --noconfig.train_vi --config.wandb.name "kl 40gmm pis net eps=1, cos_sq" --config.nn_arch dds
 ```
 
-### GMM
-Reproduce our experiment by typing 
-```sh
-python gmm.py:
-  --config: Training configuration.
-    (default: './configs/gmm.py')
-  --workdir: Working directory
-    (default: './workdir')
+```bash
+-python examples/many_gmm.py -config.solver.outer_solver MCD_CAIS_var_sn --config.N 2000 --config.nbridges 256 --noconfig.pretrain_mfvi --config.init_sigma 15 --config.grad_clipping --config.init_eps 0.65 --config.emb_dim 130 --config.lr 0.005 --noconfig.train_eps --noconfig.train_vi --config.wandb.name "logvar 40gmm"
 ```
 
-### Noisy inpainting, super resolution and deblur
-
-First, download the checkpoints and place them into an `exp/` folder in the working directory of this README file.
-
-You will require the pre-trained model checkpoints to access the score models. All checkpoints are from [Score-Based Generative Modeling through Stochastic Differential Equations](https://github.com/yang-song/score_sde/blob/main/README.md) and provided in this [Google drive](https://drive.google.com/drive/folders/1RAG8qpOTURkrqXKwdAR1d6cU9rwoQYnH).
-
-Please note that if for any reason you need to download the CelebAHQ and/or FFHQ datasets, you will need to manually download them using these [instructions](https://github.com/tkarras/progressive_growing_of_gans#preparing-datasets-for-training). 
-
-Reproduce our inpainting, super_resolution and deblur experiments through `main.py`. Please first 
-download the FID statistics for CIFAR-10 using these [instructions](https://github.com/yang-song/score_sde/tree/main#:~:text=Stats%20files%20for%20quantitative%20evaluation) and place them into the `assets/` folder in the working directory of this README file.
-```sh
-python main.py:
-  --config: Configuration.
-  --eval_folder: The folder name for storing evaluation results.
-    (default: 'eval')
-  --mode: <eval_inpainting|eval_super_resolution|eval_deblur>: Run evaluation on: inpainting, super_resolution or deblur.
-  --workdir: Working directory.
+```bash
+python examples/many_gmm.py --config.solver.outer_solver CMCDOD --config.N 2000 --config.nbridges 256 --noconfig.pretrain_mfvi --config.init_sigma 15 --config.grad_clipping --config.init_eps 0.1 --config.emb_dim 130 --config.lr 0.005 --noconfig.train_eps --noconfig.train_vi --config.wandb.name "kl 40gmm"
 ```
 
-* `config` is the path to the config file. They are adapted from [these configurations](https://github.com/yang-song/score_sde/tree/main/configs). Our prescribed config files are provided in `configs/`.
-
-*  `workdir` is the path that stores all artifacts of an experiment, like checkpoints, which are required for loading the score model.
-
-* `eval_folder` is the name of a subfolder in `workdir` that stores all artifacts of the evaluation process, like image samples, and numpy dumps of quantitative results.
-
-* `mode` is the inverse problem. When set to {"eval_inpainting", "eval_super_resolution", "eval_deblur"}, it performs our {inpainting, super resolution, deblur} experiment.
-
-The experimental setup can be configured through the config file and the experimental parameters within `run_lib.py`.
-
-We also provide scripts to simply sample from either inpainting, super_resolution and deblur experiments through `main.py`.
-```sh
-python main.py:
-  --config: Configuration.
-  --eval_folder: The folder name for storing evaluation results.
-    (default: 'eval')
-  --mode: <inpainting|super_resolution|deblur>: Run sampling on: inpainting, super_resolution or deblur.
-  --workdir: Working directory.
+```bash
+ python examples/many_gmm.py --config.solver.outer_solver CMCDOD --config.N 2000 --config.nbridges 256 --noconfig.pretrain_mfvi --config.init_sigma 60 --config.grad_clipping --config.init_eps 1 --config.eps_schedule cos_sq --config.lr 0.001 --noconfig.train_eps --noconfig.train_vi --config.wandb.name "kl 40gmm pis net eps=1, cos_sq" --config.nn_arch dds
 ```
 
-## Does haves
-- Bayesian inversion (inverse problems) with linear observation maps such as: super-resolution, inpainting, deblur, and easily extendable to non-linear observation operators.
-- Implementations of TMPD as well as other baselines, such as [ΠGDM](https://openreview.net/forum?id=9_gsMA8MRKQ) and [DPS](https://arxiv.org/abs/2209.14687).
-- DDIM, DDPM, SMLD samplers/Markov chains.
-- Get started with the fully reproducible numerical experiments from our paper, provided.
+#### Funnel
 
-## Doesn't haves
-- Medical imaging inverse problem examples.
-- Text-guided image editing.
+```bash
+python examples/funnel.py --config.solver.outer_solver CMCDOD --config.N 300 --config.alpha 0.05 --config.emb_dim 48 --config.init_eps 0.1 -config.init_sigma 1 --config.iters 11000 --noconfig.pretrain_mfvi --config.train_vi --noconfig.train_eps --config.wandb.name "funnel replicate w/ cos_sq" --config.lr 0.01 --config.n_samples 2000 --config.eps_schedule cos_sq
+```
 
+#### LGCP
+
+```
+python examples/lgcp.py --config.solver.outer_solver CMCDOD --config.N 20 --config.alpha 0.05 --config.emb_dim 20 --config.init_eps 0.00001 -config.init_sigma 1 --config.iters 37500 --config.pretrain_mfvi --config.train_vi --config.train_eps --config.wandb.name "lgcp replicate" --config.lr 0.0001 --config.n_samples 500 --config.mfvi_iters 20000
+```
+
+#### 2-GMM
+
+```
+python examples/gmm.py --config.solver.outer_solver CMCDOD --config.N 300 --config.alpha 0.05 --config.emb_dim 20 --config.init_eps 0.01 -config.init_sigma 1 --config.iters 11000 --noconfig.pretrain_mfvi --config.train_vi --noconfig.train_eps --config.wandb.name "gmm replicate" --config.lr 0.001 --config.n_samples 500
+```
+
+If you use any of this code, please cite the original work using the following BibTeX entry:
+
+```bibtex
+@inproceedings{
+vargas2024transport,
+title={Transport meets Variational Inference: Controlled Monte Carlo Diffusions},
+author={Francisco Vargas and Shreyas Padhy and Denis Blessing and Nikolas N{\"u}sken},
+booktitle={The Twelfth International Conference on Learning Representations},
+year={2024},
+url={https://openreview.net/forum?id=PP1rudnxiW}
+}
+```

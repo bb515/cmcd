@@ -1,4 +1,32 @@
 """Calculate the normalising constant using CMCD."""
+import os
+import pickle
+from functools import partial
+from diffusionjax.utils import flatten_nested_dict
+from cmcd.utils import update_config_dict
+from cmcd.run_lib import (
+  training,
+  sample_from_target,
+  initialize,
+  compute_bound,
+  setup_training,
+  get_solver,
+  )
+from ml_collections.config_flags import config_flags
+from absl import app, flags
+import jax
+import jax.numpy as jnp
+import jax.random as random
+from jax.scipy.stats import multivariate_normal, norm
+import wandb
+
+
+FLAGS = flags.FLAGS
+config_flags.DEFINE_config_file(
+  "config", './configs/funnel.py', "Training configuration.",
+  lock_config=True)
+flags.DEFINE_string("workdir", './examples/', "Work directory.")
+flags.mark_flags_as_required(["workdir", "config"])
 
 
 FUNNEL_EPS_DICT = {
@@ -11,37 +39,37 @@ FUNNEL_EPS_DICT = {
 }
 
 
-def load_model(model="funnel", config=None):
-    d = config.funnel_d
-    sig = config.funnel_sig
-    clip_y = config.funnel_clipy
+def load_model(config):
+  d = config.data.funnel_d
+  sig = config.data.funnel_sig
+  clip_y = config.data.funnel_clipy
 
-    def neg_energy(x):
-        def unbatched(x):
-            v = x[0]
-            log_density_v = norm.logpdf(v, loc=0.0, scale=3.0)
-            variance_other = np.exp(v)
-            other_dim = d - 1
-            cov_other = np.eye(other_dim) * variance_other
-            mean_other = np.zeros(other_dim)
-            log_density_other = multivariate_normal.logpdf(
-                x[1:], mean=mean_other, cov=cov_other
-            )
-            return log_density_v + log_density_other
+  def neg_energy(x):
+    def unbatched(x):
+      v = x[0]
+      log_density_v = norm.logpdf(v, loc=0.0, scale=3.0)
+      variance_other = jnp.exp(v)
+      other_dim = d - 1
+      cov_other = jnp.eye(other_dim) * variance_other
+      mean_other = jnp.zeros(other_dim)
+      log_density_other = multivariate_normal.logpdf(
+          x[1:], mean=mean_other, cov=cov_other
+      )
+      return log_density_v + log_density_other
 
-        output = np.squeeze(jax.vmap(unbatched)(x[None, :]))
-        return output
+    output = jnp.squeeze(jax.vmap(unbatched)(x[None, :]))
+    return output
 
-    def sample_data(rng, n_samples):
-        # sample from Nd funnel distribution
+  def sample_data(rng, n_samples):
+    # sample from Nd funnel distribution
 
-        y_rng, x_rng = jr.split(rng)
+    y_rng, x_rng = random.split(rng)
 
-        y = (sig * jr.normal(y_rng, (n_samples, 1))).clip(-clip_y, clip_y)
-        x = jr.normal(x_rng, (n_samples, d - 1)) * np.exp(-y / 2)
-        return np.concatenate((y, x), axis=1)
+    y = (sig * random.normal(y_rng, (n_samples, 1))).clip(-clip_y, clip_y)
+    x = random.normal(x_rng, (n_samples, d - 1)) * jnp.exp(-y / 2)
+    return jnp.concatenate((y, x), axis=1)
 
-    return neg_energy, d, sample_data
+  return neg_energy, d, sample_data
 
 
 def main(argv):
@@ -55,13 +83,8 @@ def main(argv):
   # jax_config.update("jax_traceback_filtering", "off")
   # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 
-  ml_collections.config_flags.DEFINE_config_file(
-      "config",
-      "configs/base.py",
-      "Training configuration.",
-      lock_config=False,
-  )
-  FLAGS = flags.FLAGS
+  log_prob_model, dim, sample_from_target_fn = load_model(config)
+  sample_shape = (dim,)
 
   wandb_kwargs = {
     "project": config.wandb.project,
@@ -75,17 +98,30 @@ def main(argv):
   with wandb.init(**wandb_kwargs) as run:
     setup_training(run)
     # Load in the correct LR from sweeps
-    values = FUNNEL_EPS_DICT[wandb_config.num_outer_steps]
+    values = FUNNEL_EPS_DICT[config.solver.num_outer_steps]
     new_vals = {"init_eps": values["init_eps"], "lr": values["lr"]}
     update_config_dict(config, run, new_vals)
-    print(config)
+    params, samples, target_samples, n_samples = training(
+      config, log_prob_model, sample_from_target_fn, sample_shape)
+    sample_from_target(config, sample_from_target_fn, samples, target_samples, n_samples)
 
-  # Organize into a model setup thing in run_lib
-  # If tractable distribution, we also return sample_from_target_fn
-  log_prob_model, dim, sample_from_target_fn = load_model(
-      config.model, config
-  )
+    if config.wandb.log_artifact:
+      artifact_name = f"funnel_{config.solver.bound_mode}_{config.solver.num_outer_steps}"
+      artifact = wandb.Artifact(
+        artifact_name,
+        type="final params",
+      )
+      # Save model
+      with artifact.new_file("params.pkl", "wb") as f:
+        pickle.dump(params, f)
+
+      wandb.log_artifact(artifact)
 
 
 if __name__ == "__main__":
+    # os.environ["WANDB_API_KEY"] = "9835d6db89010f73306f92bb9a080c9751b25d28"
+
+    # Adds jax flags to the program.
+    jax.config.config_with_absl()
+
     app.run(main)

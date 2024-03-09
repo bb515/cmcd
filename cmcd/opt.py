@@ -79,8 +79,6 @@ def run(
 
     grad, (loss, z) = grad_and_loss(
         seeds, params_flat, unflatten, params_fixed, log_prob_model)
-    print(loss)
-    assert 0
 
     if use_ema:
         _, (ema_loss, z_ema) = grad_and_loss(
@@ -103,7 +101,7 @@ def run(
 
     if jnp.isnan(jnp.mean(loss)):
         print("Diverged")
-        return params_flat, ema_params
+        return losses, params_flat, ema_params
 
     updates, opt_state = optimizer.update(grad, opt_state, params_flat)
     params_flat = optax.apply_updates(params_flat, updates)
