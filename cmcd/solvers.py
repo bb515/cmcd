@@ -2,17 +2,17 @@
 
 NOTE: These methods are not DDPM, in DDPM there is a scaling by sqrt(1. - beta)
 NOTE:
-  They have an annealing scheme that only uses local information, by differentiating wrt p_0
+  So far have an annealing scheme that only uses local information, by differentiating wrt p_0
   - v_t * I^{-1} x - alpha_t C^{-1} x
   whereas diffusion has global information, by integrating over p_0 - (v_t * I + alpha_t * C)^{-1} x
- NOTE: Their solver will scan over an arange(num_steps), going up in increment.
+NOTE: Official implementation solver will scan over an arange(num_steps), going up in increment.
 
 """
 from abc import abstractmethod
 from diffusionjax.solvers import Solver, EulerMaruyama
 from diffusionjax.utils import get_linear_beta_function, continuous_to_discrete, get_times, get_timestep
 import numpyro.distributions as npdist
-from cmcd.utils import log_prob_kernel, get_annealed_langevin, sample_rep, build
+from cmcd.utils import log_prob_kernel, get_annealed_langevin, get_base_process_score, sample_rep, build
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 from jax import vmap, random, grad, value_and_grad
@@ -41,6 +41,7 @@ class CMCDUD(Solver):
     """
     super().__init__(ts)
     if beta is None:
+      # TODO: investigate keeping this beta scheduler within diffusionjax framework?
       beta, _ = get_linear_beta_function(
         beta_min=0.1, beta_max=20.)
     self.params = params
@@ -56,17 +57,7 @@ class CMCDUD(Solver):
 
     # TODO: check that something like this works
     if base_process_score is None:
-      if grad_clipping:
-        raise NotImplementedError()
-        # p = lambda x: vd.log_prob(params["vd"], x)
-        # gp = grad(p)(x)
-        # u = lambda z: log_prob_model(x)
-        # gu = jax.grad(u)(x)
-        # guc = np.clip(gu, -clip, clip)
-        # return -1.0 * (beta * guc + (1.0 - beta) * gp)
-      else:
-        base_process_potential = get_annealed_langevin(self.log_prob)
-        base_process_score = grad(base_process_potential)
+      base_process_score = get_base_process_score(self.log_prob, grad_clipping=grad_clipping)
 
     self.base_process_score = base_process_score
 
@@ -75,12 +66,6 @@ class CMCDUD(Solver):
     """
     Initialize the params.
     """
-    # TODO: investigate keeping this stuff within diffusionjax framework?
-    # get_timestep(t)
-    # discrete_betas[i]
-    # eps is a beta schedule multiplied by dt?
-    # eps = self.discrete_betas[i]
-    # eps = _cosine_eps_schedule(params["eps"], i)
 
   @abstractmethod
   def forward_kernel(self):
@@ -96,9 +81,7 @@ class CMCDUD(Solver):
     return w
 
   def init_aux(self, xd):
-    # NOTE: from mcdboundingmachine.py
     w = - self.dist_xd.log_prob(xd)
-    # NOTE: from the individual evolve methods
     w = w - self.log_prob_kernel(xd, jnp.zeros_like(xd), 1.0)
     return w
 
@@ -127,13 +110,9 @@ class CMCDUD(Solver):
 
 class LeapfrogEA(CMCDUD):
   """
-
   NOTE: implements from mcd_under_lp_ea import evolve_underdamped_lp_ea
-
-  aka
-    elif mode == "MCD_U_ea-lp-sn":
-
-  evolve_underdamped_lp_ea (mcd_under_lp_ea)"""
+  aka elif mode == "MCD_U_ea-lp-sn":
+  """
   def init_params(self, t):
     eps = self.params["eps"]
     gamma = self.params["gamma"]
@@ -328,17 +307,7 @@ class CMCDOD(Solver):
     self.log_prob = log_prob
 
     if base_process_score is None:
-      if grad_clipping:
-        raise NotImplementedError()
-        # p = lambda x: vd.log_prob(params["vd"], x)
-        # gp = grad(p)(x)
-        # u = lambda z: log_prob_model(x)
-        # gu = jax.grad(u)(x)
-        # guc = np.clip(gu, -clip, clip)
-        # return -1.0 * (beta * guc + (1.0 - beta) * gp)
-      else:
-        base_process_potential = get_annealed_langevin(self.log_prob)
-        base_process_score = grad(base_process_potential)
+      base_process_score = get_base_process_score(self.log_prob, grad_clipping=grad_clipping)
 
     self.base_process_score = base_process_score
 
@@ -358,7 +327,7 @@ class CMCDOD(Solver):
     return scale, eps
 
   def prior(self, rng, shape):
-    # TODO: not sure about this!
+    # TODO: not sure about this
     x_0 = sample_rep(rng, self.params["vd"])
     return x_0
 
@@ -408,7 +377,7 @@ class VarCMCDOD(CMCDOD):
   evolve_overdamped_var_cais aka MCD_CAIS_var_sn aka mcd_cais_var
   NOTE: CMCD + VarGrad loss uses MCD_CAIS_var_sn
 
-  TODO: use _eps_schedule, _cosine_eps_schedule
+  TODO: implement _eps_schedule, _cosine_eps_schedule
   """
   def forward_kernel(self, rng, eps, scale, x, t):
     i = get_timestep(t, 1.0, 0.0, 8)
@@ -446,36 +415,24 @@ class MonteCarloDiffusion(CMCDOD):
 
 class UHA(Solver):
   """
-  as a baseline, this is just a method to compare against for the purposes of the paper.
+  As a baseline, this is just a method to compare against for the purposes of the paper.
+
+  From Thin et al. https://proceedings.mlr.press/v139/thin21a/thin21a.pdf
+  Annealed Importance Sampling using Underdamped Langevin Markov transition
+  kernels Markov chain.
 
   NOTE: UHA uses UHA
-
-  Need to know the base process value and potential. But this cannot be used with score estimate since score is not necessarily gradient of a potential.
-  TODO: Not sure how it would differ from AISUDLangevin or other UD methods.
   NOTE: delta_H only appears in this solver.
   NOTE: This implements  src/ais_utils.py the second-order momentum based version of Langevin dynamics (Uncorrected Hamiltonian Annealing), known as UHA.
   It implements leapfrog step to conserve the Hamiltonian (momentum equation). The version propose by Geffner et al used score networks (so presumably would need a network instead of a negative log potential?) along with 2nd order dynamics,
   but they implement it slightly differently in mcd_under_lp_a.
-  TODO: compare to mcd_under_lp_a
-
-  TODO: Annealed importance sampled Underdamped Langevin seems to keep scale of the state space the same, since x is not rescaled. Not sure it's what I want to implement first since I can't compare it to any other implementation
-  From Thin et al. https://proceedings.mlr.press/v139/thin21a/thin21a.pdf
-  Annealed Importance Sampling using Underdamped Langevin Markov transition
-  kernels Markov chain.
   """
   def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, grad_clipping=False, num_leapfrog_steps=None):
     """
     Args:
-      # TODO: can the params we differentiate objective wrt be passed here and defined as arguments in normal way?
-      negative_potential: ( - log p_(x, t) ) negative potential of the base process.
+      log_prob: function log p_(x, t) negative potential of the base process.
       base_process_score: TODO placeholder, probably not needed.
-      aux_process_score: TODO placeholder, probably not needed.
-      beta: TODO: placeholder, probably not needed.
-      score: grad_{x}(log p_{x, t})
-      model: DDIM parameterizes the `epsilon(x, t) = -1. * fwd_marginal_std(t) * score(x, t)` function.
-      eta: the hyperparameter for DDIM, a value of `eta=0.0` is deterministic 'probability ODE' solver, `eta=1.0` is DDPMVP.
     """
-
     super().__init__(ts)
     if beta is None:
       beta, _ = get_linear_beta_function(
@@ -489,7 +446,7 @@ class UHA(Solver):
     self.num_leapfrog_steps = num_leapfrog_steps
     self.inner_ts = jnp.arange(self.num_leapfrog_steps - 1)
     self.base_process_potential = get_annealed_langevin(self.log_prob)
-    self.base_process_value_and_grad = value_and_grad(self.base_process_potential, argnums=1)
+    self.base_process_value_and_grad = get_base_process_score(self.log_prob, grad_clipping=grad_clipping, value_and_grad=True)
     self.base_process_momentum_score = grad(self.base_process_momentum_potential)
     self.base_process_momentum_value_and_grad = value_and_grad(self.base_process_momentum_potential)
 
@@ -499,7 +456,6 @@ class UHA(Solver):
     return x_0, xd_0
 
   def init_aux(self, xd):
-    # TODO: is there any way to remove delta_H from this?
     w = - self.dist_xd.log_prob(xd)
     delta_H = 0
     return w, delta_H
@@ -521,27 +477,22 @@ class UHA(Solver):
     # find the potential of the momentum, which is normally distributed.
     dist = npdist.Independent(npdist.Normal(loc=jnp.zeros_like(xd), scale=jnp.exp(self.params["md"])), 1)
     return -1. * dist.log_prob(xd)
-  # def log_prob_momdist(xd, params):
-  #     dist = npdist.Independent(npdist.Normal(loc=jnp.zeros_like(xd), scale=jnp.exp(params)), 1)
-  #     return dist.log_prob(xd)
 
-  # TODO: needed?
-  def sample_momdist(rng_key, eta, prev, params):
-      # Params is just an array with logscale parameters
-      dim = params.shape[0]
-      xd_indep = np.exp(params) * jax.random.normal(rng_key, params.shape)
-      if prev is None:
-        xd = xd_indep
-      else:
-        xd = eta * prev + np.sqrt(1.0 - eta**2) * xd_indep
-      return xd
+  # TODO: remove if not needed
+  # def sample_momdist(rng_key, eta, prev, params):
+  #     # Params is just an array with logscale parameters
+  #     dim = params.shape[0]
+  #     xd_indep = np.exp(params) * jax.random.normal(rng_key, params.shape)
+  #     if prev is None:
+  #       xd = xd_indep
+  #     else:
+  #       xd = eta * prev + np.sqrt(1.0 - eta**2) * xd_indep
+  #     return xd
 
   def inner_update(self, x, xd, t):
     eps = self.params["eps"]
-    # xd = xd - eps * grad(self.negative_potential)(x, t)
     xd = xd - eps * self.base_process_score(params["vd"], x, t)
     x = x + eps * self.base_process_momentum_score(xd)
-    # x = x + eps * grad(self.negative_potential_momentum)(xd)
     return x, xd
 
   def inner_step(self, carry, i):
@@ -551,19 +502,6 @@ class UHA(Solver):
     return (rng, x, xd, t), None
 
   def update(self, rng, x, xd, t, aux):
-
-    # TODO: needed? what is this for... presumably if get_sampler needs to be different.
-    def _init(x, xd, rng):
-      w = aux
-      rng, step_rng = random.split(rng)
-      xd = random.normal()
-      # Evolve system
-      rng, step_rng = random.split(rng)
-      aux = w
-      x, xd, aux = jax.lax.scan(update, aux, ts)
-      w, delta_H = aux
-      return x, aux
-
     w, delta_H = aux
     scale, scale_f, eta, eps, md = self.init_params(t)
 

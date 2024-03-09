@@ -262,7 +262,7 @@ def initialize(
     if param=="vd":  # variational? distribution
       init_param = vdparams
       if vdparams is None:
-        init_param = initialize_dist(shape, init_sigma=config.solver.init_sigma)
+        init_param = initialize_dist(shape, sigma=config.solver.sigma)
     elif param=="md":  # momentum? distribution
       init_param = mdparams
       if mdparams is None:
@@ -425,7 +425,7 @@ def get_solver(config, params, log_prob, base_process_score, apply_sn, beta, ts)
   elif config.solver.outer_solver.lower()=="montecarlodiffusion":
     Solver = MonteCarloDiffusion
   elif config.solver.outer_solver.lower()=="uha":
-    return UHA(params, log_prob, base_process_score, apply_sn, beta, ts, num_leapfrog_steps=config.solver.num_leapfrog_steps)
+    return UHA(params, log_prob, base_process_score, apply_sn, beta, ts, grad_clipping=config.training.grad_clip, num_leapfrog_steps=config.solver.num_leapfrog_steps)
   else:
     raise NotImplementedError(f"Solver {config.solver.outer_solver} unknown.")
   return Solver(params, log_prob, base_process_score, apply_sn, beta, ts, grad_clipping=config.training.grad_clip)

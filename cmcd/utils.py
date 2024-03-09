@@ -45,9 +45,9 @@ def make_grid(x, im_size: int, n: int = 16, wandb_prefix: str = ""):
   plt.close()
 
 
-def initialize_dist(dim, init_sigma=1.0):
+def initialize_dist(dim, sigma=1.0):
   mean = jnp.zeros(dim)
-  logdiag = jnp.ones(dim) * jnp.log(init_sigma)
+  logdiag = jnp.ones(dim) * jnp.log(sigma)
   return {"mean": mean, "logdiag": logdiag}
 
 
@@ -204,6 +204,35 @@ def get_annealed_langevin(log_prob_model):
   def potential(params_vd, x, t):
     return -1. * (t * log_prob_model(x) + (1. - t) * log_prob(params_vd, x))
   return potential
+
+
+def get_base_process_score(log_prob_model, grad_clipping=False, value_and_grad=False):
+  if grad_clipping:
+    base_process_potential = get_annealed_langevin(log_prob_model)
+    if value_and_grad:
+      base_process_score = value_and_grad(base_process_potential)
+    else:
+      base_process_score = grad(base_process_potential)
+  else:
+    if value_and_grad:
+      def base_process_score(params_vs, x, t):
+        p = lambda x: log_prob(params["vd"], x)
+        p, gp = value_and_grad(p)(x)
+        u = lambda x: log_prob_model(x)
+        u, gu = value_and_grad(u)(x)
+        guc = jnp.clip(gu, -clip, clip)
+        grad = -1.0 * (beta * guc + (1.0 - beta) * gp)
+        val = -1.0 * (beta *  u + (1. - beta) * p)
+        return val, grad
+    else:
+      def base_process_score(params_vs, x, t):
+        p = lambda x: log_prob(params["vd"], x)
+        gp = grad(p)(x)
+        u = lambda x: log_prob_model(x)
+        gu = grad(u)(x)
+        guc = jnp.clip(gu, -clip, clip)
+        return -1.0 * (beta * guc + (1.0 - beta) * gp)
+  return base_process_score
 
 
 def get_underdamped_sampler(shape, outer_solver, inner_solver=None, denoise=True, stack_samples=False, inverse_scaler=None):

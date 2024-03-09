@@ -78,7 +78,7 @@ def main(argv):
   jax.default_device = jax.devices()[0]
   # Tip: use CUDA_VISIBLE_DEVICES to restrict the devices visible to jax
   # ... they must be all the same model of device for pmap to work
-  num_devices =  int(jax.local_device_count()) if config.training.pmap else 1
+  # num_devices =  int(jax.local_device_count()) if config.training.pmap else 1
 
   # jax_config.update("jax_traceback_filtering", "off")
   # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
@@ -106,7 +106,7 @@ def main(argv):
     sample_from_target(config, sample_from_target_fn, samples, target_samples, n_samples)
 
     if config.wandb.log_artifact:
-      artifact_name = f"funnel_{config.solver.bound_mode}_{config.solver.num_outer_steps}"
+      artifact_name = f"funnel_{config.solver.outer_solver}_{config.solver.num_outer_steps}"
       artifact = wandb.Artifact(
         artifact_name,
         type="final params",

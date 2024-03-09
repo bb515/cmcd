@@ -7,30 +7,8 @@ def get_config():
     config = get_default_configs()
     # training
     training = config.training
-    training.sde = 'vpsde'
-    # training.sde = 'vesde'
-    training.n_iters = 4000
+    training.n_iters = 150  # 150000
     training.batch_size = 8
-    training.likelihood_weighting = False
-    training.score_scaling = True
-    training.reduce_mean = True
-    training.log_epoch_freq = 1
-    training.log_step_freq = 8000
-    training.pmap = False
-    training.n_jitted_steps = 1
-    ## store additional checkpoints for preemption in cloud computing environments
-    training.snapshot_freq = 8000
-    training.snapshot_freq_for_preemption = 8000
-    training.eval_freq = 8000
-
-    # eval
-    eval = config.eval
-    eval.batch_size = 1000
-
-    # sampling
-    sampling = config.sampling
-    sampling.denoise = True
-    sampling.noise_std = 0.05
 
     # data
     data = config.data
@@ -38,40 +16,23 @@ def get_config():
     data.num_channels = None
     data.num_mixes = 4  # 40
     data.loc_scaling = 10  # 40
-    cwd = os.getcwd()
-    data.file_path = os.path.join(cwd, "../pines.csv")
+    # cwd = os.getcwd()
+    # data.file_path = os.path.join(cwd, "../pines.csv")
 
     # model
     model = config.model
-    # for vp
     model.beta_min = 0.01
     model.beta_max = 3.
-    # for ve
-    model.sigma_min = 0.01
-    model.sigma_max = 10.
+    model.emd_dim = 48
+    # model.num_layers = 3
 
     # solver
     solver = config.solver
     solver.num_outer_steps = 1000
     solver.outer_solver = 'MonteCarloDiffusion'
-    solver.inner_solver = None
     solver.leapfrog_steps = 1
     solver.eps = 0.01
     solver.eta = 0.5
     solver.gamma = 10.0
-
-    # TODO: confirm these parameters are for the network
-    model.emd_dim = 48
-    # model.num_layers = 3
-
-    # optim
-    optim = config.optim
-    optim.optimizer = 'Adam'
-    optim.lr = 1e-3
-    optim.warmup = False
-    optim.weight_decay = False
-    optim.grad_clip = None
-
-    config.seed = 2023
 
     return config
