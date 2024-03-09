@@ -29,7 +29,7 @@ class CMCDUD(Solver):
 
   For second-order underdamped (UD) dynamical system of SDE/Markov chain.
   """
-  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None):
+  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, grad_clipping=False):
     """
     Args:
       params:
@@ -56,8 +56,17 @@ class CMCDUD(Solver):
 
     # TODO: check that something like this works
     if base_process_score is None:
-      base_process_potential = get_annealed_langevin(self.log_prob)
-      base_process_score = grad(base_process_potential)
+      if grad_clipping:
+        raise NotImplementedError()
+        # p = lambda x: vd.log_prob(params["vd"], x)
+        # gp = grad(p)(x)
+        # u = lambda z: log_prob_model(x)
+        # gu = jax.grad(u)(x)
+        # guc = np.clip(gu, -clip, clip)
+        # return -1.0 * (beta * guc + (1.0 - beta) * gp)
+      else:
+        base_process_potential = get_annealed_langevin(self.log_prob)
+        base_process_score = grad(base_process_potential)
 
     self.base_process_score = base_process_score
 
@@ -301,7 +310,7 @@ class CMCDOD(Solver):
   NOTE: ULA uses MCD_ULA
   NOTE: MCD uses MCD_ULA_sn
   """
-  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None):
+  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, grad_clipping=False):
     """
     Args:
         score: grad_{x}(log p_{x, t})
@@ -319,8 +328,17 @@ class CMCDOD(Solver):
     self.log_prob = log_prob
 
     if base_process_score is None:
-      base_process_potential = get_annealed_langevin(self.log_prob)
-      base_process_score = grad(base_process_potential)
+      if grad_clipping:
+        raise NotImplementedError()
+        # p = lambda x: vd.log_prob(params["vd"], x)
+        # gp = grad(p)(x)
+        # u = lambda z: log_prob_model(x)
+        # gu = jax.grad(u)(x)
+        # guc = np.clip(gu, -clip, clip)
+        # return -1.0 * (beta * guc + (1.0 - beta) * gp)
+      else:
+        base_process_potential = get_annealed_langevin(self.log_prob)
+        base_process_score = grad(base_process_potential)
 
     self.base_process_score = base_process_score
 
@@ -445,7 +463,7 @@ class UHA(Solver):
   Annealed Importance Sampling using Underdamped Langevin Markov transition
   kernels Markov chain.
   """
-  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, num_leapfrog_steps=None):
+  def __init__(self, params, log_prob, base_process_score=None, auxilliary_process_score=None, beta=None, ts=None, grad_clipping=False, num_leapfrog_steps=None):
     """
     Args:
       # TODO: can the params we differentiate objective wrt be passed here and defined as arguments in normal way?

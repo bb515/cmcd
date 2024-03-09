@@ -200,6 +200,7 @@ def get_betas(num_steps):
 def get_annealed_langevin(log_prob_model):
   # negative potential is the log probability
   # potential is a the negative of this value (- log p(x, t)) representing energy
+  # TODO: implement grad_clipping here
   def potential(params_vd, x, t):
     return -1. * (t * log_prob_model(x) + (1. - t) * log_prob(params_vd, x))
   return potential

@@ -39,6 +39,7 @@ def get_default_configs():
   training.lr = 0.0001
 
   training.use_ema = False
+  training.grad_clip = False
 
   # sampling
   config.sampling = sampling = ml_collections.ConfigDict()

@@ -428,7 +428,7 @@ def get_solver(config, params, log_prob, base_process_score, apply_sn, beta, ts)
     return UHA(params, log_prob, base_process_score, apply_sn, beta, ts, num_leapfrog_steps=config.solver.num_leapfrog_steps)
   else:
     raise NotImplementedError(f"Solver {config.solver.outer_solver} unknown.")
-  return Solver(params, log_prob, base_process_score, apply_sn, beta, ts)
+  return Solver(params, log_prob, base_process_score, apply_sn, beta, ts, grad_clipping=config.training.grad_clip)
 
 
 def update_config_dict(config_dict: ml_collections.ConfigDict, run, new_vals: dict):
