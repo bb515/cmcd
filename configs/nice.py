@@ -11,15 +11,13 @@ def get_config():
     mfvi.n_iters = 150  # 150000
     mfvi.lr = 0.01
 
-    # config.N = 5  # 5 for all except NICE
     # training
     training = config.training
     training.n_iters = 150
-    training.batch_size = 8
+    training.batch_size = 5
 
     # data
     data = config.data
-    # NICE Config/
     data.im_size = 14
     data.alpha = 0.05
     data.n_bits = 3
@@ -27,7 +25,6 @@ def get_config():
 
     # model
     model = config.model
-    # for annealed langevin base process
     model.beta_min = 0.01
     model.beta_max = 3.
     model.emd_dim = 48

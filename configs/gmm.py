@@ -14,7 +14,7 @@ def get_config():
     # training
     training = config.training
     training.n_iters = 150  # 150000
-    training.batch_size = 8
+    training.batch_size = 5
 
     # data
     data = config.data
@@ -27,7 +27,7 @@ def get_config():
 
     # solver
     solver = config.solver
-    solver.num_outer_steps = 8
+    solver.num_outer_steps = 1
     solver.outer_solver = 'MonteCarloDiffusion'
 
     return config

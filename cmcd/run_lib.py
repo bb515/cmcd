@@ -113,17 +113,18 @@ def training(config, log_prob_model, sample_from_target_fn, sample_shape):
     print("Done training initial parameters, got ELBO %.2f." % elbo_init)
     wandb.log({"elbo_init": jnp.array(elbo_init)})
 
-  if config.solver.outer_solver == "UHA":  # TODO: this is UHA from src/ais_utils.py?
-    trainable = ("eta", "mgridref_y")
+  if config.solver.outer_solver.lower() == "uha":
+    trainable = ("eta")
     if config.training.train_eps:
       trainable = trainable + ("eps",)
     if config.training.train_vi:
       trainable = trainable + ("vd",)
+    if config.training.train_betas:
+      trainable = trainable + ("mgridref_y")
     params_flat, unflatten, params_fixed = initialize(
-      config,
+      config=config,
       shape=shape,
       vdparams=vdparams_init,
-      mdparams=mdparams,
       trainable=trainable
     )
 
@@ -133,11 +134,13 @@ def training(config, log_prob_model, sample_from_target_fn, sample_shape):
     loss = jax.jit(compute_bound, static_argnums=(2, 3, 4))
 
   elif config.solver.outer_solver in MCD_SOLVERS:
-    trainable = ("eta", "gamma", "mgridref_y")
+    trainable = ("eta", "gamma")
     if config.training.train_eps:
       trainable = trainable + ("eps",)
     if config.training.train_vi:
       trainable = trainable + ("vd",)
+    if config.training.train_betas:
+      trainable = trainable + ("mgridref_y",)
 
     print(f"Params being trained : {trainable}")
     params_flat, unflatten, params_fixed = initialize(
@@ -152,6 +155,11 @@ def training(config, log_prob_model, sample_from_target_fn, sample_shape):
         compute_bound_var,
         config=config,
       )
+    elif config.training.traj_bal:
+      compute_bound_fn = partial(
+        compute_bound_traj_balance,
+        config=config,
+      )
     else:
       compute_bound_fn = partial(
         compute_bound,
@@ -164,7 +172,7 @@ def training(config, log_prob_model, sample_from_target_fn, sample_shape):
     loss_fn = jax.jit(compute_bound_fn, static_argnums=(2, 3, 4))
 
   else:
-    raise NotImplementedError("Mode %s not implemented." % config.solver.bound_mode)
+    raise NotImplementedError("Mode %s not implemented." % config.solver.outer_solver)
 
   # Average over 30 seeds, 500 samples each after training is done.
   n_samples = config.training.n_samples
@@ -192,7 +200,6 @@ def training(config, log_prob_model, sample_from_target_fn, sample_shape):
     target_samples=target_samples,
     use_ema=config.training.use_ema,
   )
-
   eval_losses, samples = opt.sample(
     config,
     n_samples,
@@ -205,7 +212,6 @@ def training(config, log_prob_model, sample_from_target_fn, sample_shape):
     eval_rng_key_gen,
     log_prefix="eval",
   )
-
   final_elbo, final_ln_Z = log_final_losses(eval_losses)
 
   print("Done training, got ELBO %.2f." % final_elbo)
@@ -224,11 +230,9 @@ def training(config, log_prob_model, sample_from_target_fn, sample_shape):
       eval_rng_key_gen,
       log_prefix="eval",
     )
-
     final_elbo_ema, final_ln_Z_ema = log_final_losses(
       eval_losses_ema, log_prefix="_ema"
     )
-
     print("With EMA, got ELBO %.2f." % final_elbo_ema)
     print("With EMA, got ln Z %.2f." % final_ln_Z_ema)
 
@@ -243,19 +247,9 @@ def initialize(
     trainable=["eps", "eta"],
     vdparams=None,
     mdparams=None):
-  """
-  Solvers allowed:
-    - ULA: This is ULA. Method from Thin et al.
-    - ULA_sn: This is MCD. Method from Doucet et al.
-    - U_a-lp: UHA but with approximate sampling of momentum (no score network).
-    - U_a-lp-sn: Approximate sampling of momentum, followed by leapfrog, using score network(x, rho) for backward sampling.
-    - CAIS_sn: CAIS with trainable SN.
-    - CAIS_UHA_sn: CAIS underdampened with trainable SN.
-  """
   emb_dim = config.model.emb_dim  # TODO check
   rng = jax.random.PRNGKey(config.seed)
   num_outer_steps = config.solver.num_outer_steps
-
   params_train = {}  # all trainable parameters
   params_notrain = {}  # all non-trainable parameters
   for param in ["vd", "eps", "eta", "md", "gamma"]:
@@ -279,38 +273,21 @@ def initialize(
       params_notrain[param] = init_param
 
   if config.solver.outer_solver in OVERDAMPED_SOLVERS:
-  # if solver in [  # Overdamped methods
-  #     # TODO: what solvers do these correspond to?
-  #   "ULA_sn", "UHA?"
-  #   "U_elpsna","LeapfrogEA"?
-  #   "U_alpsna", "LeapfrogA"?
-  #   "CMCD_sn",  "CMCDOD"?
-  #   "CMCD_var_sn", "CMCDODVar"?
-  # ]:
-    # TODO: intialize_mcd_network
     x_dim = shape[0]
     in_dim = x_dim + emb_dim
     init_sn, apply_sn = initialize_mcd_network(x_dim, in_dim, emb_dim, num_outer_steps)
     params_train["sn"] = init_sn(rng, None)[1]
   elif config.solver.outer_solver in UNDERDAMPED_SOLVERS:
-  # elif solver in [  # Underdamped methods
-  #     "U_alpsn",  "LeapfrogA"
-  #     "U_ealpsn",  "LeapfrogEA"
-  #     "U_anvsn",  "?"
-  #     "CAIS_UHA_sn",  "LeapfrogACAIS"
-  #   ]:
     x_dim = shape[0]
     xd_dim = shape[0]
     in_dim = x_dim + xd_dim + emb_dim
     init_sn, apply_sn = initialize_mcd_network(x_dim, in_dim, emb_dim, num_outer_steps)
     params_train["sn"] = init_sn(rng, None)[1]
   else:
-    # TODO: No score network in use? since not mcbm but bm?
-    # TODO: switchmode for score network which does not apply to boundingmachine methods
-    # it may apply to mcboundingmachinemethods
     apply_sn = None
     print("No score network needed by the method.")
 
+  # TODO: handle cauis for num_outer_steps is zero
   # Everything related to betas
   target_x, gridref_x, mgridref_y, ts = get_betas(num_outer_steps)
   params_notrain["gridref_x"] = gridref_x
@@ -323,14 +300,19 @@ def initialize(
   else:
     params_notrain["mgridref_y"] = mgridref_y
 
+  print(ts)
+  # assert 0
+
   # Other fixed parameters
   params_fixed = (shape, num_outer_steps, apply_sn)
   params_flat, unflatten = ravel_pytree((params_train, params_notrain))
   return params_flat, unflatten, params_fixed
 
 
-def compute_ratio(seed, params_flat, unflatten, params_fixed, log_prob, config):
+def compute_log_elbo(seed, params_flat, unflatten, params_fixed, log_prob, config):
   rng = jax.random.PRNGKey(seed)
+
+  # TODO: handle cauis for num_outer_steps is zero
 
   # If params not supplied here:
   # params_flat, params_fixed = initialize_bm()
@@ -372,7 +354,7 @@ def compute_ratio(seed, params_flat, unflatten, params_fixed, log_prob, config):
     stack_samples=False, inverse_scaler=inverse_scaler)
 
   rng, sample_rng = jax.random.split(rng, 2)
-  # NOTE: The only thing that needs batching is this sampler, so I don't think that compute_ratio needs to be vmapped
+  # NOTE: The only thing that needs batching is this sampler, so I don't think that compute_log_elbo needs to be vmapped
   x, aux, num_function_evaluations = sampler(sample_rng)
 
   if config.solver.outer_solver.lower() == "uha":
@@ -392,17 +374,27 @@ def compute_bound(seeds, params_flat, unflatten, params_fixed, log_prob, config)
   # # TODO: decided on whether to explicitly use a batch dimension and take away the vmap,
   # # at the moment the only reason to keep explicit batch dimension is because Song's models
   # # explicitly batch across this dimension without vmap
-  ratios, x = jax.vmap(compute_ratio, in_axes=(0, None, None, None, None, None))(
+  batch_log_elbos, x = jax.vmap(compute_log_elbo, in_axes=(0, None, None, None, None, None))(
     seeds, params_flat, unflatten, params_fixed, log_prob, config,
   )
-  return ratios.mean(), (ratios, x)
+  return batch_log_elbos.mean(), (batch_log_elbos, x)
 
 
 def compute_bound_var(seeds, params_flat, unflatten, params_fixed, log_prob, config):
-  ratios, x = jax.vmap(compute_ratio, in_axes=(0, None, None, None, None, None))(
+  batch_log_elbos, x = jax.vmap(compute_log_elbo, in_axes=(0, None, None, None, None, None))(
     seeds, params_flat, unflatten, params_fixed, log_prob, config
   )
-  return jnp.clip(ratios.var(ddof=0), -1e7, 1e7), (ratios, x)
+  # E(x - ln_Z)^2 = E(x^2) - 2E(x)ln_Z + ln_Z^2
+  return jnp.clip(batch_log_elbos.var(ddof=0), -1e7, 1e7), (batch_log_elbos, x)
+
+
+def compute_bound_traj_balance(seeds, params_flat, unflatten, params_fixed, log_prob, config):
+  batch_log_elbos, (z, _) = jax.vmap(compute_log_elbo, in_axes=(0, None, None, None, None, None))(
+      seeds, params_flat, unflatten, params_fixed, log_prob, config
+  )
+  # E(x - ln_Z)^2 = E(x^2) - 2E(x)ln_Z + ln_Z^2
+  params_train, params_notrain = unflatten(params_flat)
+  return jnp.mean((batch_log_elbos - params_train["ln_z"]) ** 2), (batch_log_elbos, z)
 
 
 def get_solver(config, params, log_prob, base_process_score, apply_sn, beta, ts):

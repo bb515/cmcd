@@ -9,6 +9,7 @@ import ot
 from functools import partial
 from cmcd.nn import initialize_mcd_network
 import wandb
+import warnings
 
 
 def update_config_dict(config_dict, run, new_vals: dict):
@@ -305,7 +306,6 @@ def get_underdamped_sampler(shape, outer_solver, inner_solver=None, denoise=True
 
     rng, step_rng = random.split(rng)
 
-    # TODO: x_0 is initiated to zero in these underdamped solvers?
     if x_0 is None and xd_0 is None:
       if inner_solver:
         x, xd = inner_solver.prior(step_rng, shape)
@@ -320,19 +320,27 @@ def get_underdamped_sampler(shape, outer_solver, inner_solver=None, denoise=True
 
     if aux_0 is None:
       if inner_solver:
-        aux = inner_solver.init_aux(xd)
+        aux = inner_solver.init_aux(x)
       else:
-        aux = outer_solver.init_aux(xd)
+        aux = outer_solver.init_aux(x)
     else:
       aux = aux_0
 
     if not stack_samples:
-      (_, x, x_mean, aux), _ = scan(outer_step, (rng, x, xd, aux), outer_ts, reverse=True)
-      aux = outer_solver.fin_aux(aux, xd)
-      return inverse_scaler(x_mean if denoise else x), aux, num_function_evaluations
+      if jnp.size(outer_ts) >= 1:
+        (_, x, xd, aux), _ = scan(outer_step, (rng, x, xd, aux), outer_ts, reverse=True)
+        aux = outer_solver.fin_aux_momentum(aux, xd)
+
+      aux = outer_solver.fin_aux(aux, x)
+      if denoise: warnings.warn("denoise at last step not implemented, returning sample instead")
+      return inverse_scaler(x), aux, num_function_evaluations
+      # return inverse_scaler(x_mean if denoise else x), aux, num_function_evaluations
     else:
-      (_, _, _, _), xs = scan(outer_step, (rng, x, xd, aux), outer_ts, reverse=True)
-      aux = outer_solver.fin_aux(aux, xd)
+      if jnp.size(outer_ts) >= 1:
+        (_, x, xd, aux), xs = scan(outer_step, (rng, x, xd, aux), outer_ts, reverse=True)
+        aux = outer_solver.fin_aux_momentum(aux, xd)
+
+      aux = outer_solver.fin_aux(aux, x)
       return inverse_scaler(xs), aux, num_function_evaluations
 
   # return jax.pmap(sampler, in_axes=(0), axis_name='batch')
@@ -428,7 +436,7 @@ def get_overdamped_sampler(shape, outer_solver, inner_solver=None, denoise=True,
       aux = outer_solver.fin_aux(aux, x)
       return inverse_scaler(x_mean if denoise else x), aux, num_function_evaluations
     else:
-      (_, _, _, _), xs = scan(outer_step, (rng, x, x, aux), outer_ts, reverse=True)
+      (_, x, _, aux), xs = scan(outer_step, (rng, x, x, aux), outer_ts, reverse=True)
       aux = outer_solver.fin_aux(aux, x)
       return inverse_scaler(xs), aux, num_function_evaluations
 

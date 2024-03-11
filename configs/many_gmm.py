@@ -8,7 +8,7 @@ def get_config():
     # training
     training = config.training
     training.n_iters = 150  # 150000
-    training.batch_size = 8
+    training.batch_size = 5
 
     # data
     data = config.data
@@ -16,8 +16,6 @@ def get_config():
     data.num_channels = None
     data.num_mixes = 4  # 40
     data.loc_scaling = 10  # 40
-    # cwd = os.getcwd()
-    # data.file_path = os.path.join(cwd, "../pines.csv")
 
     # model
     model = config.model

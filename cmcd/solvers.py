@@ -75,14 +75,26 @@ class CMCDUD(Solver):
   def backward_kernel(self):
     """ """
 
-  def fin_aux(self, aux, xd):
-    w = aux
-    w = w + self.log_prob(xd)
+  def init_aux(self, x):
+    # w_(T=1) = - log q_{T=1}(x_(T=1))
+    w = - self.dist_xd.log_prob(x)
     return w
 
-  def init_aux(self, xd):
-    w = - self.dist_xd.log_prob(xd)
+  def init_aux_momentum(self, aux, xd):
+    w = aux
+    # add initial momentum term to w. This term only added if nbridges >= 1.
     w = w - self.log_prob_kernel(xd, jnp.zeros_like(xd), 1.0)
+    return w
+
+  def fin_aux_momentum(self, aux, xd):
+    w = aux
+    # add final momentum term to w. This term only added if num_steps >= 1.
+    w = w + self.log_prob_kernel(xd, jnp.zeros_like(xd), 1.0)
+    return w
+
+  def fin_aux(self, aux, x):
+    w = aux
+    w = w + self.log_prob(x)
     return w
 
   def prior(self, rng, shape):
@@ -103,6 +115,7 @@ class CMCDUD(Solver):
     # Update weight
     fk_log_prob = self.log_prob_kernel(xd_prime, fk_xd_mean, scale_f)
     bk_log_prob = self.log_prob_kernel(xd, bk_xd_mean, scale)
+    # w += \sum_{k=1}^{K-1} [log B_k(z_k  | z_{k+1}) - log F_k(z_k | z_{k+1})]
     w += bk_log_prob - fk_log_prob
     aux = w
     return x_new, xd_new, aux
@@ -147,9 +160,11 @@ class LeapfrogEA(CMCDUD):
 
 class LeapfrogA(CMCDUD):
   """
-  NOTE: LDVI uses MCD_U_a-lp-sn
+
   NOTE: implements from mcd_under_lp_a import evolve_underdamped_lp_a
-  aka mode == "MCD_U_a-lp", "MCD_U_a-lp-sna", "MCD_U_a-lp-sn"
+  if mode == "MCD_U_a-lp" UHA but with approximate sampling of momentum (no score network).
+  elif mode == "MCD_U_a-lp-sna" LDVI uses MCD_U_a-lp-sn
+  "MCD_U_a-lp-sn" Approximate sampling of momentum, followed by leapfrog, using score network(x, rho) for backward sampling.
   """
   def init_params(self, t):
     eps = self.params["eps"]
@@ -243,8 +258,8 @@ class LeapfrogACAIS(CMCDUD):
   """
   NOTE: implements from mcd_under_lp_a_cais import evolve_underdamped_lp_a_cais
   aka
-    elif mode == "MCD_CAIS_UHA_sn"
-  NOTE: 2nd order CMCD uses MCD_CAIS_UHA_sn
+    elif mode == "MCD_CAIS_UHA_sn" 2nd order CMCD with trainable SN.
+
   """
   def init_params(self, t):
     # TODO: eps should be eps = _cosine_eps_schedule(params["eps"], i)
@@ -280,12 +295,11 @@ class CMCDOD(Solver):
 
   NOTE: implements from mcd_over_orig import evolve_overdamped_orig
   aka
-  if mode == "MCD_ULA"
-  elif mode == "MCD_ULA_sn"
+  if mode == "MCD_ULA" This is ULA. Method from Thin et al.
+  elif mode == "MCD_ULA_sn" ULA_sn: This is MCD. Method from Doucet et al.
   NOTE: also implements from mcd_cais import evolve_overdamped_cais
   aka
-  elif mode == "MCD_CAIS_sn": TODO: use _eps_schedule, _cosine_eps_schedule in that case
-  NOTE: CMCD uses MCD_CAIS_sn
+  elif mode == "MCD_CAIS_sn" CMCD with trainable SN. TODO: use _eps_schedule, _cosine_eps_schedule in that case
   NOTE: ULA uses MCD_ULA
   NOTE: MCD uses MCD_ULA_sn
   """

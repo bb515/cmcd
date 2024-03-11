@@ -18,7 +18,6 @@ def get_default_configs():
 
   # training
   config.training = training = ml_collections.ConfigDict()
-  # config.training.batch_size = 5
   training.n_iters = 150  # 150000
   # TODO: investigate if an SDE can be used to define the base process
   # training.sde = 'vpsde'
@@ -27,7 +26,7 @@ def get_default_configs():
   # training.likelihood_weighting = False
   # training.score_scaling = True
   # training.reduce_mean = True
-  training.batch_size = 8
+  training.batch_size = 5  # 5 for all except NICE
   # TODO: implement jit compiled training steps of solver
   # training.n_jitted_steps = 1
   # TODO: implement pmap over devices in training
@@ -42,11 +41,13 @@ def get_default_configs():
   training.run_cluster = False
   training.train_eps = True
   training.train_vi = True
+  training.train_betas = True
   training.n_samples = 500
   training.n_input_dist_seeds = 30
   training.lr = 0.0001
   training.use_ema = False
   training.grad_clip = False
+  training.traj_bal = False
 
   # sampling
   config.sampling = sampling = ml_collections.ConfigDict()
